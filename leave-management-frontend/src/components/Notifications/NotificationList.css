@@ -1,0 +1,11 @@
+.notification {
+    padding: 1rem;
+    margin: 0.5rem 0;
+    border-radius: 6px;
+    background-color: #eee;
+  }
+  
+  .notification.unread {
+    background-color: #ffe0e0;
+  }
+  

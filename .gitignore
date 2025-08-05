@@ -1,0 +1,25 @@
+# === Python / Flask backend ===
+__pycache__/
+*.py[cod]
+*.sqlite3
+.env
+.env.*
+env/
+venv/
+
+# === Node / React frontend ===
+node_modules/
+build/
+dist/
+*.log
+npm-debug.log*
+
+# === VS Code settings ===
+.vscode/
+
+# === OS generated files ===
+.DS_Store
+Thumbs.db
+
+# === Zip files ===
+*.zip
