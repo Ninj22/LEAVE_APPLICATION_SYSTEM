@@ -12,10 +12,13 @@ def get_kenyan_public_holidays(year):
         date(year, 12, 26), # Boxing Day
     ]
 
-    # Calculate Easter holidays
-    e = easter(year)
-    holidays.append(e - timedelta(days=2)) # Good Friday
-    holidays.append(e + timedelta(days=1)) # Easter Monday
+    # Good Friday (variable, based on Easter)
+    easter_sunday = easter(year)
+    good_friday = easter_sunday - timedelta(days=2)
+    holidays.append(good_friday)
+    # Easter Monday
+    easter_monday = easter_sunday + timedelta(days=1)
+    holidays.append(easter_monday)
 
     # Handle holidays falling on a weekend (observed on next Monday)
     # This is a common practice but might need to be confirmed for Kenya

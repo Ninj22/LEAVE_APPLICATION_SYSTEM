@@ -1,18 +1,17 @@
-# src/models/login_session.py
-
-from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timezone
-
-db = SQLAlchemy()
+from src.extensions import db
 
 class LoginSession(db.Model):
     __tablename__ = 'login_sessions'
+    __table_args__ = {'extend_existing': True}
     
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     login_time = db.Column(db.DateTime, default=datetime.now(timezone.utc))
     ip_address = db.Column(db.String(45))
     user_agent = db.Column(db.Text)
+
+    user = db.relationship('User', back_populates='login_sessions')
 
     def to_dict(self):
         return {

@@ -1,13 +1,21 @@
-# src/models/__init__.py
 from flask_sqlalchemy import SQLAlchemy
+from .leave import LeaveType, LeaveRequest, LeaveBalance
 from .user import User
-from .leave_balance import LeaveBalance
-from .leave_type import LeaveType
-from .leave_application import LeaveApplication
+from .department import Department
 from .login_session import LoginSession
 from .password_reset_token import PasswordResetToken
-from .department import Department
+from .notification import Notification
 
+__all__ = [
+    'LeaveType',
+    'LeaveRequest',
+    'LeaveBalance',
+    'User',
+    'Department',
+    'LoginSession',
+    'PasswordResetToken',
+    'Notification'
+]
 
 db = SQLAlchemy()
 

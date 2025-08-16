@@ -4,10 +4,8 @@ from flask_jwt_extended import JWTManager
 from flask_mail import Mail
 
 db = SQLAlchemy()
+migrate = Migrate()
 jwt = JWTManager()
 mail = Mail()
-migrate = Migrate() 
 
-__all__ = [
-    'db','migrate', 'jwt', 'mail'
-]
+__all__ = ['db', 'migrate', 'jwt', 'mail']

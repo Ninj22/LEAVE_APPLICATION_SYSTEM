@@ -9,8 +9,12 @@ from src.extensions import db, jwt, mail, migrate
 from src.routes.routes import main_bp, notifications_bp
 
 import os
-
+import os
+from dotenv import load_dotenv
 load_dotenv()
+
+from .main import create_app
+
 
 db = SQLAlchemy()
 jwt = JWTManager()

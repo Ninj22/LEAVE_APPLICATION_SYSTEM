@@ -3,11 +3,8 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime, date, timedelta
 from sqlalchemy import and_, or_, func
 
-
 from src.models.user import db, User
-from src.models.leave import LeaveType
-from src.models.leave import LeaveBalance
-from src.models.leave import LeaveApplication
+from src.models.leave import LeaveType, LeaveRequest, LeaveBalance
 
 dashboard_bp = Blueprint('dashboard', __name__)
 
@@ -37,10 +34,10 @@ def get_dashboard_stats():
         stats['leave_balances'] = [balance.to_dict() for balance in balances]
         
         # User's applications this year
-        user_applications = LeaveApplication.query.filter(
+        user_applications = LeaveRequest.query.filter(
             and_(
-                LeaveApplication.user_id == user_id,
-                db.extract('year', LeaveApplication.start_date) == current_year
+                LeaveRequest.employee_id == user_id,
+                db.extract('year', LeaveRequest.start_date) == current_year
             )
         ).all()
         
@@ -50,25 +47,25 @@ def get_dashboard_stats():
         
         # Current leave status
         today = date.today()
-        current_leave = LeaveApplication.query.filter(
+        current_leave = LeaveRequest.query.filter(
             and_(
-                LeaveApplication.user_id == user_id,
-                LeaveApplication.status == 'approved',
-                LeaveApplication.start_date <= today,
-                LeaveApplication.end_date >= today
+                LeaveRequest.employee_id == user_id,
+                LeaveRequest.status == 'approved',
+                LeaveRequest.start_date <= today,
+                LeaveRequest.end_date >= today
             )
         ).first()
         
         stats['currently_on_leave'] = current_leave.to_dict() if current_leave else None
         
         # Upcoming approved leaves
-        upcoming_leaves = LeaveApplication.query.filter(
+        upcoming_leaves = LeaveRequest.query.filter(
             and_(
-                LeaveApplication.user_id == user_id,
-                LeaveApplication.status == 'approved',
-                LeaveApplication.start_date > today
+                LeaveRequest.employee_id == user_id,
+                LeaveRequest.status == 'approved',
+                LeaveRequest.start_date > today
             )
-        ).order_by(LeaveApplication.start_date).limit(3).all()
+        ).order_by(LeaveRequest.start_date).limit(3).all()
         
         stats['upcoming_leaves'] = [leave.to_dict() for leave in upcoming_leaves]
         
@@ -76,16 +73,16 @@ def get_dashboard_stats():
         if user.role in ['hod', 'principal_secretary']:
             # Pending applications to review
             if user.role == 'hod':
-                pending_to_review = LeaveApplication.query.join(User).filter(
+                pending_to_review = LeaveRequest.query.join(User).filter(
                     and_(
-                        LeaveApplication.status == 'pending',
+                        LeaveRequest.status == 'pending',
                         User.role == 'staff'
                     )
                 ).count()
             else:  # principal_secretary
-                pending_to_review = LeaveApplication.query.join(User).filter(
+                pending_to_review = LeaveRequest.query.join(User).filter(
                     and_(
-                        LeaveApplication.status == 'pending',
+                        LeaveRequest.status == 'pending',
                         User.role == 'hod'
                     )
                 ).count()
@@ -94,10 +91,10 @@ def get_dashboard_stats():
             
             # Applications reviewed this month
             start_of_month = date.today().replace(day=1)
-            reviewed_this_month = LeaveApplication.query.filter(
+            reviewed_this_month = LeaveRequest.query.filter(
                 and_(
-                    LeaveApplication.approved_by == user_id,
-                    LeaveApplication.approval_date >= start_of_month
+                    LeaveRequest.approved_by == user_id,
+                    LeaveRequest.approval_date >= start_of_month
                 )
             ).count()
             
@@ -112,12 +109,12 @@ def get_dashboard_stats():
             stats['total_hods'] = total_hods
             
             # Staff currently on leave
-            staff_on_leave = LeaveApplication.query.join(User).filter(
+            staff_on_leave = LeaveRequest.query.join(User).filter(
                 and_(
                     User.role == 'staff',
-                    LeaveApplication.status == 'approved',
-                    LeaveApplication.start_date <= today,
-                    LeaveApplication.end_date >= today
+                    LeaveRequest.status == 'approved',
+                    LeaveRequest.start_date <= today,
+                    LeaveRequest.end_date >= today
                 )
             ).count()
             
@@ -157,14 +154,14 @@ def get_calendar_data():
         else:
             end_date = date(year, month + 1, 1) - timedelta(days=1)
         
-        leaves = LeaveApplication.query.filter(
+        leaves = LeaveRequest.query.filter(
             and_(
-                LeaveApplication.user_id == user_id,
-                LeaveApplication.status == 'approved',
+                LeaveRequest.employee_id == user_id,
+                LeaveRequest.status == 'approved',
                 or_(
-                    and_(LeaveApplication.start_date <= start_date, LeaveApplication.end_date >= start_date),
-                    and_(LeaveApplication.start_date <= end_date, LeaveApplication.end_date >= end_date),
-                    and_(LeaveApplication.start_date >= start_date, LeaveApplication.end_date <= end_date)
+                    and_(LeaveRequest.start_date <= start_date, LeaveRequest.end_date >= start_date),
+                    and_(LeaveRequest.start_date <= end_date, LeaveRequest.end_date >= end_date),
+                    and_(LeaveRequest.start_date >= start_date, LeaveRequest.end_date <= end_date)
                 )
             )
         ).all()
@@ -200,13 +197,13 @@ def get_leave_countdown():
         today = date.today()
         
         # Find the next upcoming approved leave
-        next_leave = LeaveApplication.query.filter(
+        next_leave = LeaveRequest.query.filter(
             and_(
-                LeaveApplication.user_id == user_id,
-                LeaveApplication.status == 'approved',
-                LeaveApplication.start_date > today
+                LeaveRequest.employee_id == user_id,
+                LeaveRequest.status == 'approved',
+                LeaveRequest.start_date > today
             )
-        ).order_by(LeaveApplication.start_date).first()
+        ).order_by(LeaveRequest.start_date).first()
         
         if not next_leave:
             return jsonify({'countdown': None}), 200
@@ -215,12 +212,12 @@ def get_leave_countdown():
         days_until = (next_leave.start_date - today).days
         
         # If leave starts today or is ongoing
-        current_leave = LeaveApplication.query.filter(
+        current_leave = LeaveRequest.query.filter(
             and_(
-                LeaveApplication.user_id == user_id,
-                LeaveApplication.status == 'approved',
-                LeaveApplication.start_date <= today,
-                LeaveApplication.end_date >= today
+                LeaveRequest.employee_id == user_id,
+                LeaveRequest.status == 'approved',
+                LeaveRequest.start_date <= today,
+                LeaveRequest.end_date >= today
             )
         ).first()
         
@@ -268,13 +265,13 @@ def get_available_users():
         all_users = User.query.filter(User.id != user_id).all()
         
         # Find users who are on approved leave during the specified period
-        unavailable_user_ids = db.session.query(LeaveApplication.user_id).filter(
+        unavailable_user_ids = db.session.query(LeaveRequest.employee_id).filter(
             and_(
-                LeaveApplication.status == 'approved',
+                LeaveRequest.status == 'approved',
                 or_(
-                    and_(LeaveApplication.start_date <= start_date, LeaveApplication.end_date >= start_date),
-                    and_(LeaveApplication.start_date <= end_date, LeaveApplication.end_date >= end_date),
-                    and_(LeaveApplication.start_date >= start_date, LeaveApplication.end_date <= end_date)
+                    and_(LeaveRequest.start_date <= start_date, LeaveRequest.end_date >= start_date),
+                    and_(LeaveRequest.start_date <= end_date, LeaveRequest.end_date >= end_date),
+                    and_(LeaveRequest.start_date >= start_date, LeaveRequest.end_date <= end_date)
                 )
             )
         ).distinct().all()
@@ -292,4 +289,3 @@ def get_available_users():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
