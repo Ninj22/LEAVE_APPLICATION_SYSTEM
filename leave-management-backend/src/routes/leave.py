@@ -2,25 +2,41 @@ from flask import Blueprint, request, jsonify, send_file
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime, date, timedelta, timezone
 from sqlalchemy import and_, or_
-from src.models.user import db, User
-from src.models.leave import LeaveType, LeaveRequest, LeaveBalance
+from src.models.user import User
+from src.models.leave import LeaveRequest
+from src.models.leave_type import LeaveType
+from src.models.leave_balance import LeaveBalance
+from src.models.leave_application import LeaveApplication
 from src.utils.email_utils import send_leave_notification, send_leave_status_update
 from src.holidays import get_kenyan_public_holidays
 from src.models.notification import Notification
 from src.utils.pdf_generator import generate_leave_application_pdf
 import os
+from src.extensions import db
 
 leave_bp = Blueprint("leave", __name__)
 
 def calculate_working_days(start_date, end_date, exclude_weekends=True):
     """Calculate working days between two dates, excluding weekends and public holidays"""
+    if start_date > end_date:
+        return 0
+        
     working_days = 0
     current_date = start_date
     
-    # Get public holidays for the year of the leave
-    public_holidays = get_kenyan_public_holidays(start_date.year)
+    # Get public holidays for the years involved
+    years = set()
+    temp_date = start_date
+    while temp_date <= end_date:
+        years.add(temp_date.year)
+        temp_date = temp_date.replace(year=temp_date.year + 1) if temp_date.month == 12 and temp_date.day == 31 else temp_date + timedelta(days=365)
+    
+    public_holidays = set()
+    for year in years:
+        public_holidays.update(get_kenyan_public_holidays(year))
 
     while current_date <= end_date:
+        # Monday = 0, Sunday = 6
         if exclude_weekends and current_date.weekday() >= 5:  # Saturday or Sunday
             current_date += timedelta(days=1)
             continue
@@ -45,16 +61,57 @@ def get_leave_types():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@leave_bp.route('/balances', methods=['GET'])
+@jwt_required()
+def get_leave_balances():
+    """Get current user's leave balances"""
+    try:
+        user_id = get_jwt_identity()
+        current_year = datetime.now().year
+        
+        balances = LeaveBalance.get_user_all_balances(user_id, current_year)
+        
+        # If no balances exist, create them
+        if not balances:
+            user = User.query.get(user_id)
+            if user:
+                user.init_leave_balances()
+                db.session.commit()
+                balances = LeaveBalance.get_user_all_balances(user_id, current_year)
+        
+        return jsonify({
+            "balances": [balance.to_dict() for balance in balances]
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
+@leave_bp.route('/balance/<int:leave_type_id>', methods=['GET'])
+@jwt_required()
+def get_leave_balance_by_type(leave_type_id):
+    """Get user's balance for specific leave type"""
+    try:
+        user_id = get_jwt_identity()
+        current_year = datetime.now().year
+        
+        balance = LeaveBalance.get_user_balance(user_id, leave_type_id, current_year)
+        
+        if not balance:
+            return jsonify({'error': 'Leave balance not found'}), 404
+        
+        return jsonify({'balance': balance.to_dict()}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @leave_bp.route('/apply', methods=['POST'])
 @jwt_required()
 def apply_leave():
+    """Submit a new leave application"""
     try:
         user_id = get_jwt_identity()
+        user = User.query.get(user_id)
         data = request.get_json()
-        
-        subject = data.get('subject')
-        if subject and not isinstance(subject, str):
-            return jsonify({'msg': 'Subject must be a string'}), 422
         
         # Validate required fields
         required_fields = ['leave_type_id', 'start_date', 'end_date']
@@ -70,45 +127,49 @@ def apply_leave():
             return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
         
         if start_date > end_date:
-            return jsonify({'error': 'Start date must be before end date'}), 400
+            return jsonify({'error': 'Start date must be before or equal to end date'}), 400
         
         if start_date < date.today():
             return jsonify({'error': 'Cannot apply for past dates'}), 400
         
         # Get leave type
         leave_type = LeaveType.query.get(data['leave_type_id'])
-        if not leave_type:
-            return jsonify({'error': 'Invalid leave type'}), 400
+        if not leave_type or not leave_type.is_active:
+            return jsonify({'error': 'Invalid or inactive leave type'}), 400
         
         # Calculate days requested
         days_requested = calculate_working_days(start_date, end_date, leave_type.exclude_weekends)
         
-        # Check leave balance
-        current_year = datetime.now(timezone.utc).year
-        balance = LeaveBalance.query.filter_by(
-            user_id=user_id,
-            leave_type_id=data['leave_type_id'],
-            year=current_year
-        ).first()
+        if days_requested <= 0:
+            return jsonify({'error': 'Invalid date range - no working days selected'}), 400
         
-        if not balance or balance.balance < days_requested:
-            return jsonify({'error': 'Insufficient leave balance'}), 400
+        # Check leave balance
+        current_year = datetime.now().year
+        balance = LeaveBalance.get_user_balance(user_id, data['leave_type_id'], current_year)
+        
+        if not balance:
+            return jsonify({'error': 'Leave balance not initialized'}), 400
+        
+        if not balance.can_take_leave(days_requested):
+            return jsonify({
+                'error': f'Insufficient leave balance. Requested: {days_requested} days, Available: {balance.remaining_days()} days'
+            }), 400
         
         # Check for overlapping applications
-        overlapping = LeaveRequest.query.filter(
+        overlapping = LeaveApplication.query.filter(
             and_(
-                LeaveRequest.employee_id == user_id,
-                LeaveRequest.status.in_(['Pending', 'approved']),
+                LeaveApplication.applicant_id == user_id,
+                LeaveApplication.status.in_(['pending', 'pending_hod_approval', 'pending_principal_secretary_approval', 'approved']),
                 or_(
-                    and_(LeaveRequest.start_date <= start_date, LeaveRequest.end_date >= start_date),
-                    and_(LeaveRequest.start_date <= end_date, LeaveRequest.end_date >= end_date),
-                    and_(LeaveRequest.start_date >= start_date, LeaveRequest.end_date <= end_date)
+                    and_(LeaveApplication.start_date <= start_date, LeaveApplication.end_date >= start_date),
+                    and_(LeaveApplication.start_date <= end_date, LeaveApplication.end_date >= end_date),
+                    and_(LeaveApplication.start_date >= start_date, LeaveApplication.end_date <= end_date)
                 )
             )
         ).first()
         
         if overlapping:
-            return jsonify({'error': 'You have overlapping leave applications'}), 400
+            return jsonify({'error': 'You have overlapping leave applications for this period'}), 400
         
         # Parse optional date fields
         last_leave_from = None
@@ -132,15 +193,15 @@ def apply_leave():
             if not person:
                 return jsonify({'error': 'Invalid person for handling duties'}), 400
             
-            # Check if person is available
-            person_leave = LeaveRequest.query.filter(
+            # Check if person is available during leave period
+            person_leave = LeaveApplication.query.filter(
                 and_(
-                    LeaveRequest.employee_id == person_handling_duties_id,
-                    LeaveRequest.status == 'approved',
+                    LeaveApplication.applicant_id == person_handling_duties_id,
+                    LeaveApplication.status == 'approved',
                     or_(
-                        and_(LeaveRequest.start_date <= start_date, LeaveRequest.end_date >= start_date),
-                        and_(LeaveRequest.start_date <= end_date, LeaveRequest.end_date >= end_date),
-                        and_(LeaveRequest.start_date >= start_date, LeaveRequest.end_date <= end_date)
+                        and_(LeaveApplication.start_date <= start_date, LeaveApplication.end_date >= start_date),
+                        and_(LeaveApplication.start_date <= end_date, LeaveApplication.end_date >= end_date),
+                        and_(LeaveApplication.start_date >= start_date, LeaveApplication.end_date <= end_date)
                     )
                 )
             ).first()
@@ -148,40 +209,47 @@ def apply_leave():
             if person_leave:
                 return jsonify({'error': 'Selected person is not available during your leave period'}), 400
         
-        # Create leave request
-        application = LeaveRequest(
-            employee_id=user_id,
+        # Create leave application
+        application = LeaveApplication(
+            applicant_id=user_id,
             leave_type_id=data["leave_type_id"],
+            subject=data.get('subject'),
             start_date=start_date,
             end_date=end_date,
-            reason=subject,
+            days_requested=days_requested,
+            last_leave_from=last_leave_from,
+            last_leave_to=last_leave_to,
+            contact_info=data.get("contact_info"),
+            salary_payment_preference=data.get("salary_payment_preference", "bank_account"),
+            salary_payment_address=data.get("salary_payment_address"),
+            permission_note_country=data.get("permission_note_country"),
             person_handling_duties_id=person_handling_duties_id
         )
         
         # Set initial status based on applicant role
-        applicant = User.query.get(user_id)
-        if applicant.role == "staff":
+        if user.role == "staff":
             application.status = "pending_hod_approval"
-        elif applicant.role == "hod":
+        elif user.role == "hod":
             application.status = "pending_principal_secretary_approval"
         else:
-            application.status = "Pending"
+            application.status = "pending"
 
         db.session.add(application)
         db.session.commit()
-
-        # Send email notification
-        try:
-            leave_type_name = leave_type.name if leave_type else "Unknown"
-            send_leave_notification(
-                to_email=applicant.email,
-                applicant_name=f"{applicant.first_name} {applicant.last_name}",
-                leave_type=leave_type_name,
-                start_date=application.start_date,
-                end_date=application.end_date
-            )
-        except Exception as e:
-            print(f"Email sending failed: {e}")
+        
+        # Create notifications for approvers
+        if user.role == "staff":
+            # Notify all HODs
+            hods = User.query.filter_by(role='hod').all()
+            for hod in hods:
+                Notification.create_leave_application_notification(hod.id, application)
+        elif user.role == "hod":
+            # Notify Principal Secretary
+            ps_users = User.query.filter_by(role='principal_secretary').all()
+            for ps in ps_users:
+                Notification.create_leave_application_notification(ps.id, application)
+        
+        db.session.commit()
 
         return jsonify({
             'message': 'Leave application submitted successfully',
@@ -195,12 +263,28 @@ def apply_leave():
 @leave_bp.route('/applications', methods=['GET'])
 @jwt_required()
 def get_user_applications():
+    """Get current user's leave applications"""
     try:
         user_id = get_jwt_identity()
         
-        applications = LeaveRequest.query.filter_by(employee_id=user_id).order_by(
-            LeaveRequest.applied_on.desc()
-        ).all()
+        # Get query parameters
+        status = request.args.get('status')
+        year = request.args.get('year', type=int)
+        limit = request.args.get('limit', default=50, type=int)
+        
+        query = LeaveApplication.query.filter_by(applicant_id=user_id)
+        
+        if status:
+            query = query.filter_by(status=status)
+        
+        if year:
+            query = query.filter(
+                db.extract('year', LeaveApplication.start_date) == year
+            )
+        
+        applications = query.order_by(
+            LeaveApplication.created_at.desc()
+        ).limit(limit).all()
         
         return jsonify({
             'applications': [app.to_dict() for app in applications]
@@ -212,6 +296,7 @@ def get_user_applications():
 @leave_bp.route('/pending', methods=['GET'])
 @jwt_required()
 def get_pending_applications():
+    """Get applications pending approval by current user"""
     try:
         user_id = get_jwt_identity()
         user = User.query.get(user_id)
@@ -219,23 +304,26 @@ def get_pending_applications():
         if not user:
             return jsonify({'error': 'User not found'}), 404
         
+        # Only HODs and Principal Secretary can view pending applications
         if user.role not in ['hod', 'principal_secretary']:
             return jsonify({'error': 'Unauthorized'}), 403
         
+        applications = []
+        
         if user.role == 'hod':
-            applications = LeaveRequest.query.join(User).filter(
+            # Get staff applications pending HOD approval
+            applications = LeaveApplication.query.join(User, LeaveApplication.applicant_id == User.id).filter(
                 and_(
-                    LeaveRequest.status == 'pending_hod_approval',
+                    LeaveApplication.status == 'pending_hod_approval',
                     User.role == 'staff'
                 )
-            ).order_by(LeaveRequest.applied_on.desc()).all()
-        else:  # principal_secretary
-            applications = LeaveRequest.query.join(User).filter(
-                and_(
-                    LeaveRequest.status == 'pending_principal_secretary_approval',
-                    User.role == 'hod'
-                )
-            ).order_by(LeaveRequest.applied_on.desc()).all()
+            ).order_by(LeaveApplication.created_at.desc()).all()
+            
+        elif user.role == 'principal_secretary':
+            # Get applications pending Principal Secretary approval
+            applications = LeaveApplication.query.join(User, LeaveApplication.applicant_id == User.id).filter(
+                LeaveApplication.status == 'pending_principal_secretary_approval'
+            ).order_by(LeaveApplication.created_at.desc()).all()
         
         return jsonify({
             'applications': [app.to_dict() for app in applications]
@@ -247,6 +335,7 @@ def get_pending_applications():
 @leave_bp.route('/approve/<int:application_id>', methods=['PUT'])
 @jwt_required()
 def approve_reject_application(application_id):
+    """Approve or reject a leave application"""
     try:
         user_id = get_jwt_identity()
         user = User.query.get(user_id)
@@ -258,88 +347,78 @@ def approve_reject_application(application_id):
         if user.role not in ['hod', 'principal_secretary']:
             return jsonify({'error': 'Unauthorized'}), 403
 
-        application = LeaveRequest.query.get(application_id)
+        application = LeaveApplication.query.get(application_id)
         if not application:
             return jsonify({'error': 'Application not found'}), 404
 
-        if application.status not in ['pending_hod_approval', 'pending_principal_secretary_approval']:
-            return jsonify({'error': 'Application already processed or not in a valid state'}), 400
+        action = data.get('action')  # 'approve' or 'reject'
+        comments = data.get('comments', '')
 
-        applicant = User.query.get(application.employee_id)
-        action = data.get('action')
-        message = ""
+        if action not in ['approve', 'reject']:
+            return jsonify({'error': 'Invalid action. Use "approve" or "reject"'}), 400
+
+        # Check if user can approve this application
+        if not application.can_be_approved_by(user):
+            return jsonify({'error': 'You cannot approve this application at this stage'}), 403
 
         if user.role == 'hod':
-            if applicant.role != 'staff':
-                return jsonify({'error': 'HODs can only approve staff applications'}), 403
-            if application.status != 'pending_hod_approval':
-                return jsonify({'error': 'Application is not pending HOD approval'}), 400
-
             if action == 'approve':
+                application.hod_approved = True
+                application.hod_approval_date = datetime.now(timezone.utc)
+                application.hod_comments = comments
                 application.status = 'pending_principal_secretary_approval'
-                application.approved_by = user_id
-                application.approval_date = datetime.now(timezone.utc)
+                
+                # Notify Principal Secretary
+                ps_users = User.query.filter_by(role='principal_secretary').all()
+                for ps in ps_users:
+                    Notification.create_leave_application_notification(ps.id, application)
+                
+                # Notify applicant of HOD approval
+                Notification.create_leave_approval_notification(application.applicant_id, application, user)
+                
                 message = 'Application approved by HOD, pending Principal Secretary approval.'
-
-            elif action == 'reject':
+                
+            else:  # reject
                 application.status = 'rejected'
-                application.approved_by = user_id
-                application.approval_date = datetime.now(timezone.utc)
+                application.hod_comments = comments
+                
+                # Notify applicant of rejection
+                Notification.create_leave_rejection_notification(application.applicant_id, application, user, comments)
+                
                 message = 'Application rejected by HOD.'
 
-            else:
-                return jsonify({'error': 'Invalid action'}), 400
-
         elif user.role == 'principal_secretary':
-            if applicant.role not in ['staff', 'hod']:
-                return jsonify({'error': 'Principal Secretary can only approve staff or HOD applications'}), 403
-            if application.status != 'pending_principal_secretary_approval':
-                return jsonify({'error': 'Application is not pending Principal Secretary approval'}), 400
-
             if action == 'approve':
+                application.principal_secretary_approved = True
+                application.principal_secretary_approval_date = datetime.now(timezone.utc)
+                application.principal_secretary_comments = comments
                 application.status = 'approved'
-                application.approved_by = user_id
-                application.approval_date = datetime.now(timezone.utc)
-                message = 'Application approved by Principal Secretary.'
-
-                # Deduct leave balance
-                current_year = datetime.now(timezone.utc).year
-                balance = LeaveBalance.query.filter_by(
-                    user_id=application.employee_id,
-                    leave_type_id=application.leave_type_id,
-                    year=current_year
-                ).first()
+                
+                # Deduct leave balance after final approval
+                current_year = datetime.now().year
+                balance = LeaveBalance.get_user_balance(
+                    application.applicant_id,
+                    application.leave_type_id,
+                    current_year
+                )
                 if balance:
-                    balance.balance -= calculate_working_days(
-                        application.start_date, application.end_date, application.leave_type.exclude_weekends
-                    )
-
-            elif action == 'reject':
+                    balance.use_leave_days(application.days_requested)
+                
+                # Notify applicant of final approval
+                Notification.create_leave_approval_notification(application.applicant_id, application, user)
+                
+                message = 'Application fully approved.'
+                
+            else:  # reject
                 application.status = 'rejected'
-                application.approved_by = user_id
-                application.approval_date = datetime.now(timezone.utc)
+                application.principal_secretary_comments = comments
+                
+                # Notify applicant of rejection
+                Notification.create_leave_rejection_notification(application.applicant_id, application, user, comments)
+                
                 message = 'Application rejected by Principal Secretary.'
 
-            else:
-                return jsonify({'error': 'Invalid action'}), 400
-
         db.session.commit()
-        db.session.refresh(application)
-        if application.leave_type: db.session.refresh(application.leave_type)
-        if application.employee: db.session.refresh(application.employee)
-        if application.person_handling_duties: db.session.refresh(application.person_handling_duties)
-
-        # Send status update email
-        try:
-            send_leave_status_update(
-                to_email=applicant.email,
-                applicant_name=f"{applicant.first_name} {applicant.last_name}",
-                leave_type=application.leave_type.name,
-                status=application.status,
-                comments=data.get('comments', '')
-            )
-        except Exception as e:
-            print(f"Email sending failed: {e}")
 
         return jsonify({
             'message': message,
@@ -350,78 +429,204 @@ def approve_reject_application(application_id):
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
-@leave_bp.route("/download_pdf/<int:application_id>", methods=["GET"])
+@leave_bp.route('/cancel/<int:application_id>', methods=['PUT'])
 @jwt_required()
-def download_pdf(application_id):
+def cancel_application(application_id):
+    """Cancel a pending leave application"""
     try:
         user_id = get_jwt_identity()
-        application = LeaveRequest.query.get(application_id)
+        application = LeaveApplication.query.get(application_id)
 
         if not application:
-            return jsonify({"error": "Application not found"}), 404
+            return jsonify({'error': 'Application not found'}), 404
 
-        if user_id != application.employee_id and User.query.get(user_id).role != "principal_secretary":
-            return jsonify({"error": "Unauthorized to download this PDF"}), 403
+        # Only the applicant can cancel their own application
+        if application.applicant_id != user_id:
+            return jsonify({'error': 'You can only cancel your own applications'}), 403
 
-        if application.status != "approved":
-            return jsonify({"error": "PDF is only available for approved leaves"}), 400
+        # Can only cancel pending applications
+        if application.status not in ['pending', 'pending_hod_approval', 'pending_principal_secretary_approval']:
+            return jsonify({'error': 'Cannot cancel processed applications'}), 400
 
-        pdf_path = f"/tmp/leave_application_{application_id}.pdf"
-        if not os.path.exists(pdf_path):
-            return jsonify({"error": "PDF not found. It might not have been generated yet."}), 404
+        application.status = 'cancelled'
+        db.session.commit()
 
-        return send_file(pdf_path, as_attachment=True, download_name=f"leave_application_{application_id}.pdf")
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@leave_bp.route("/generate_pdf/<int:application_id>", methods=["POST"])
-@jwt_required()   
-def generate_leave_application_pdf_route(application_id):
-    try:
-        user_id = get_jwt_identity()
-        application = LeaveRequest.query.get(application_id)
-
-        if not application:
-            return jsonify({"error": "Application not found"}), 404
-
-        if user_id != application.employee_id and User.query.get(user_id).role != "principal_secretary":
-            return jsonify({"error": "Unauthorized to generate this PDF"}), 403
-
-        pdf_path = generate_leave_application_pdf(application)
-        if not pdf_path:
-            return jsonify({"error": "Failed to generate PDF"}), 500
-
-        return send_file(pdf_path, as_attachment=True, download_name=f"leave_application_{application_id}.pdf")
+        return jsonify({
+            'message': 'Application cancelled successfully',
+            'application': application.to_dict()
+        }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 
-@leave_bp.route("/history", methods=['GET'])
+@leave_bp.route('/current', methods=['GET'])
 @jwt_required()
-def get_leave_history():
+def get_current_leave():
+    """Get user's current active leave"""
     try:
         user_id = get_jwt_identity()
+        today = date.today()
         
-        status = request.args.get('status')
-        year = request.args.get('year', type=int)
-        
-        query = LeaveRequest.query.filter_by(employee_id=user_id)
-        
-        if status:
-            query = query.filter_by(status=status)
-        
-        if year:
-            query = query.filter(
-                db.extract('year', LeaveRequest.start_date) == year
+        current_leave = LeaveApplication.query.filter(
+            and_(
+                LeaveApplication.applicant_id == user_id,
+                LeaveApplication.status == 'approved',
+                LeaveApplication.start_date <= today,
+                LeaveApplication.end_date >= today
             )
+        ).first()
         
-        applications = query.order_by(LeaveRequest.applied_on.desc()).all()
+        if current_leave:
+            return jsonify({
+                'current_leave': current_leave.to_dict(),
+                'days_remaining': (current_leave.end_date - today).days
+            }), 200
+        else:
+            return jsonify({'current_leave': None}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@leave_bp.route('/upcoming', methods=['GET'])
+@jwt_required()
+def get_upcoming_leaves():
+    """Get user's upcoming approved leaves"""
+    try:
+        user_id = get_jwt_identity()
+        today = date.today()
+        
+        upcoming_leaves = LeaveApplication.query.filter(
+            and_(
+                LeaveApplication.applicant_id == user_id,
+                LeaveApplication.status == 'approved',
+                LeaveApplication.start_date > today
+            )
+        ).order_by(LeaveApplication.start_date).all()
         
         return jsonify({
-            'history': [app.to_dict() for app in applications]
+            'upcoming_leaves': [leave.to_dict() for leave in upcoming_leaves]
         }), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@leave_bp.route('/available-users', methods=['GET'])
+@jwt_required()
+def get_available_users():
+    """Get users available for duty handover during specified period"""
+    try:
+        user_id = get_jwt_identity()
+        
+        # Get query parameters for date range
+        start_date_str = request.args.get('start_date')
+        end_date_str = request.args.get('end_date')
+        
+        if not start_date_str or not end_date_str:
+            return jsonify({'error': 'start_date and end_date are required'}), 400
+        
+        try:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+        
+        # Get all users except the current user
+        all_users = User.query.filter(User.id != user_id).all()
+        
+        # Find users who are on approved leave during the specified period
+        unavailable_user_ids = db.session.query(LeaveApplication.applicant_id).filter(
+            and_(
+                LeaveApplication.status == 'approved',
+                or_(
+                    and_(LeaveApplication.start_date <= start_date, LeaveApplication.end_date >= start_date),
+                    and_(LeaveApplication.start_date <= end_date, LeaveApplication.end_date >= end_date),
+                    and_(LeaveApplication.start_date >= start_date, LeaveApplication.end_date <= end_date)
+                )
+            )
+        ).distinct().all()
+        
+        unavailable_ids = [uid[0] for uid in unavailable_user_ids]
+        
+        # Format user data with availability status
+        users_data = []
+        for user in all_users:
+            user_dict = user.to_dict()
+            user_dict['available'] = user.id not in unavailable_ids
+            users_data.append(user_dict)
+        
+        return jsonify({'users': users_data}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@leave_bp.route('/generate-pdf/<int:application_id>', methods=['POST'])
+@jwt_required()
+def generate_pdf(application_id):
+    """Generate PDF for approved leave application"""
+    try:
+        user_id = get_jwt_identity()
+        user = User.query.get(user_id)
+        application = LeaveApplication.query.get(application_id)
+
+        if not application:
+            return jsonify({"error": "Application not found"}), 404
+
+        # Only the applicant or Principal Secretary can generate PDF
+        if user_id != application.applicant_id and user.role != "principal_secretary":
+            return jsonify({"error": "Unauthorized to generate this PDF"}), 403
+
+        if application.status != "approved":
+            return jsonify({"error": "PDF is only available for approved applications"}), 400
+
+        # Generate PDF
+        pdf_path = generate_leave_application_pdf(application)
+        if not pdf_path or not os.path.exists(pdf_path):
+            return jsonify({"error": "Failed to generate PDF"}), 500
+
+        # Update application record
+        application.pdf_generated = True
+        application.pdf_path = pdf_path
+        db.session.commit()
+
+        return send_file(
+            pdf_path, 
+            as_attachment=True, 
+            download_name=f"leave_application_{application_id}.pdf",
+            mimetype='application/pdf'
+        )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@leave_bp.route('/download-pdf/<int:application_id>', methods=['GET'])
+@jwt_required()
+def download_pdf(application_id):
+    """Download existing PDF for approved leave application"""
+    try:
+        user_id = get_jwt_identity()
+        user = User.query.get(user_id)
+        application = LeaveApplication.query.get(application_id)
+
+        if not application:
+            return jsonify({"error": "Application not found"}), 404
+
+        # Only the applicant or Principal Secretary can download PDF
+        if user_id != application.applicant_id and user.role != "principal_secretary":
+            return jsonify({"error": "Unauthorized to download this PDF"}), 403
+
+        if application.status != "approved":
+            return jsonify({"error": "PDF is only available for approved applications"}), 400
+
+        if not application.pdf_path or not os.path.exists(application.pdf_path):
+            return jsonify({"error": "PDF not found. Generate it first."}), 404
+
+        return send_file(
+            application.pdf_path,
+            as_attachment=True,
+            download_name=f"leave_application_{application_id}.pdf",
+            mimetype='application/pdf'
+        )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
