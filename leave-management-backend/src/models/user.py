@@ -103,3 +103,42 @@ class User(db.Model):
        def generate_password_reset_token(self):
            s = URLSafeTimedSerializer(current_app.config['SECRET_KEY'])
            return s.dumps(self.email, salt='password-reset')
+       
+       def init_leave_balances(self):
+        """Initialize leave balances for new user"""
+        from src.models.leave_type import LeaveType
+        from src.models.leave_balance import LeaveBalance
+        
+        current_year = datetime.now().year
+        
+        # Define default leave allocations based on requirements
+        leave_allocations = {
+            'Annual Leave': 30,
+            'Sick Leave': 14,
+            'Maternity Leave': 90,
+            'Paternity Leave': 14,
+            'Bereavement Leave': 4,
+            'Study Leave (Short Term)': 10,
+            'Study Leave (Long Term)': 502
+        }
+        
+        for leave_type_name, days in leave_allocations.items():
+            leave_type = LeaveType.query.filter_by(name=leave_type_name).first()
+            if leave_type:
+                # Check if balance already exists
+                existing_balance = LeaveBalance.query.filter_by(
+                    user_id=self.id,
+                    leave_type_id=leave_type.id,
+                    year=current_year
+                ).first()
+                
+                if not existing_balance:
+                    balance = LeaveBalance(
+                        user_id=self.id,
+                        leave_type_id=leave_type.id,
+                        total_days=days,
+                        used_days=0,
+                        balance=days,
+                        year=current_year
+                    )
+                    db.session.add(balance)
