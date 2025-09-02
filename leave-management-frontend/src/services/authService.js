@@ -50,13 +50,13 @@ export const authService = {
   },
 
   async signup(userData) {
-    try {
-      const response = await api.post('/api/auth/signup', userData);
-      return response.data;
-    } catch (error) {
-      throw new Error(error.response?.data?.error || 'Signup failed');
-    }
-  },
+  try {
+    const response = await api.post('/api/auth/signup-with-employee-number', userData);  // ✅ Correct endpoint
+    return response.data;
+  } catch (error) {
+    throw new Error(error.response?.data?.error || 'Signup failed');
+  }
+},
 
   async logout() {
     try {

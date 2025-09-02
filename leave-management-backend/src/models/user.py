@@ -11,7 +11,6 @@ class User(db.Model):
        id = db.Column(db.Integer, primary_key=True)
        employee_number = db.Column(db.String(6), unique=True, nullable=False)
        email = db.Column(db.String(255), unique=True, nullable=False)
-       password = db.Column(db.String(128), nullable=False)
        phone_number = db.Column(db.String(20), nullable=False)
        password_hash = db.Column(db.String(255), nullable=False)
        first_name = db.Column(db.String(100), nullable=False)
@@ -26,13 +25,20 @@ class User(db.Model):
 
        #Department relationship
        department_id = db.Column(db.Integer, db.ForeignKey('departments.id'), nullable=True)
+       department_id = db.Column(
+        db.Integer,
+        db.ForeignKey('departments.id', use_alter=True, name="fk_users_departments"),
+        nullable=True
+    )
 
+       department = db.relationship("Department", back_populates="users")
 
        # Relationships
-       department = db.relationship('Department', back_populates='users', foreign_keys=[department_id])
+       department = db.relationship('Department', foreign_keys=[department_id], back_populates='members')
        leave_applications = db.relationship('LeaveApplication', foreign_keys='LeaveApplication.applicant_id', back_populates='applicant')
        leave_balances = db.relationship('LeaveBalance', back_populates='user')
        notifications = db.relationship('Notification', back_populates='user')
+       approved_applications = db.relationship('LeaveApplication', foreign_keys='LeaveApplication.approved_by')
 
        login_sessions = db.relationship('LoginSession', back_populates='user', lazy=True)
     #    leave_balances = db.relationship('LeaveBalance', back_populates='user', lazy=True)
@@ -40,7 +46,7 @@ class User(db.Model):
     #    notifications = db.relationship('Notification', back_populates='user', lazy=True)
     #    leave_applications = db.relationship('LeaveRequest', foreign_keys='LeaveRequest.employee_id', back_populates='employee', lazy=True)
        duties_assigned = db.relationship('LeaveRequest', foreign_keys='LeaveRequest.person_handling_duties_id', back_populates='duty_handler', lazy=True)
-       leaves_approved = db.relationship('LeaveRequest', foreign_keys='LeaveRequest.approved_by', back_populates='approver', lazy=True)
+       leaves_approved = db.relationship('LeaveRequest', foreign_keys='LeaveRequest.approved_by', lazy=True)
 
        def set_password(self, password):
            """Hash and set password"""

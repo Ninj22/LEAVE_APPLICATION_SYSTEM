@@ -32,7 +32,8 @@ class LeaveApplication(db.Model):
     
     # Status and approval workflow
     status = db.Column(db.String(50), default='pending')  # pending, pending_hod_approval, pending_principal_secretary_approval, approved, rejected
-    
+    approved_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+
     # HOD approval
     hod_approved = db.Column(db.Boolean, default=False)
     hod_approval_date = db.Column(db.DateTime, nullable=True)

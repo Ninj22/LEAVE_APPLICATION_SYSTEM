@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from src.extensions import db
-from src.models.leave import LeaveBalance
+from src.models.leave_balance import LeaveBalance
 from datetime import datetime, timezone
 
 leave_balance_bp = Blueprint('leave_balance', __name__)

@@ -11,11 +11,9 @@ class Department(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Relationship to User (Head of Department)
-    hod = db.relationship('User', foreign_keys=[hod_id], backref='managed_department')
-    
-    # Relationship to Users (Department members)
-    members = db.relationship('User', foreign_keys='User.department_id', backref='department')
+    # Relationships
+    hod = db.relationship('User', foreign_keys=[hod_id], post_update=True)
+    members = db.relationship('User', foreign_keys='User.department_id', back_populates='department')
 
     def to_dict(self):
         return {

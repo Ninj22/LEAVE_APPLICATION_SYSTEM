@@ -10,75 +10,40 @@ class LeaveBalance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     leave_type_id = db.Column(db.Integer, db.ForeignKey('leave_types.id'), nullable=False)
-    year = db.Column(db.Integer, nullable=False, default=lambda: datetime.now().year)
-    
-    # Leave allocation and usage
-    total_days = db.Column(db.Float, nullable=False, default=0)  # Total allocated for the year
-    used_days = db.Column(db.Float, nullable=False, default=0)   # Days used
-    balance = db.Column(db.Float, nullable=False, default=0)     # Remaining days (computed)
-    
+    balance = db.Column(db.Float, default=0.0, nullable=False)
+    used = db.Column(db.Float, default=0.0, nullable=False)
+    year = db.Column(db.Integer, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    total_days = db.Column(db.Integer, default=30)   # <-- add this if needed
+
     # Relationships
-    user = db.relationship("User", back_populates="leave_balances")
-    leave_type = db.relationship("LeaveType", back_populates="balances")
+    user = db.relationship('User', back_populates='leave_balances')
+    leave_type = db.relationship('LeaveType', back_populates='balances')
     
-    def remaining_days(self):
-        """Calculate remaining leave days"""
-        return self.total_days - self.used_days
+    # Unique constraint to prevent duplicate balances for same user/leave_type/year
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'leave_type_id', 'year', name='_user_leave_type_year_uc'),
+    )
     
-    def update_balance(self):
-        """Update balance based on total and used days"""
-        self.balance = self.total_days - self.used_days
-        return self.balance
-    
-    def can_take_leave(self, days_requested):
-        """Check if user can take requested days"""
-        return self.remaining_days() >= days_requested
-    
-    def use_leave_days(self, days):
-        """Deduct leave days from balance"""
-        if self.can_take_leave(days):
-            self.used_days += days
-            self.update_balance()
-            return True
-        return False
-    
-    def restore_leave_days(self, days):
-        """Restore leave days to balance (e.g., when leave is cancelled)"""
-        self.used_days = max(0, self.used_days - days)
-        self.update_balance()
+    @property
+    def available(self):
+        """Calculate available leave balance"""
+        return max(0, self.balance - self.used)
     
     def to_dict(self):
-        """Convert leave balance to dictionary"""
         return {
             'id': self.id,
             'user_id': self.user_id,
-            'user_name': self.user.full_name if self.user else None,
             'leave_type_id': self.leave_type_id,
             'leave_type_name': self.leave_type.name if self.leave_type else None,
-            'year': self.year,
-            'total_days': self.total_days,
-            'used_days': self.used_days,
             'balance': self.balance,
-            'remaining_days': self.remaining_days()
+            'used': self.used,
+            'available': self.available,
+            'year': self.year,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
     
-    @classmethod
-    def get_user_balance(cls, user_id, leave_type_id, year=None):
-        """Get user's balance for specific leave type and year"""
-        if year is None:
-            year = datetime.now().year
-        return cls.query.filter_by(
-            user_id=user_id,
-            leave_type_id=leave_type_id,
-            year=year
-        ).first()
-    
-    @classmethod
-    def get_user_all_balances(cls, user_id, year=None):
-        """Get all leave balances for a user in a specific year"""
-        if year is None:
-            year = datetime.now().year
-        return cls.query.filter_by(user_id=user_id, year=year).all()
-    
     def __repr__(self):
-        return f'<LeaveBalance {self.user.full_name if self.user else "Unknown"} - {self.leave_type.name if self.leave_type else "Unknown"} - {self.year}: {self.remaining_days()}/{self.total_days}>'
+        return f'<LeaveBalance {self.user_id}:{self.leave_type_id} - {self.available}/{self.balance}>'
