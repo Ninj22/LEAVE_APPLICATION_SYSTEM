@@ -13,13 +13,30 @@ import calendar
 
 dashboard_bp = Blueprint('dashboard', __name__)
 
+@dashboard_bp.route('/types', methods=['GET'])
+@jwt_required()
+def get_leave_types():
+    """Get all active leave types"""
+    try:
+        leave_types = LeaveType.query.filter_by(is_active=True).all()
+        return jsonify({
+            'leave_types': [lt.to_dict() for lt in leave_types]
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# @dashboard_bp.route('/history', methods=['GET'])
+
 @dashboard_bp.route('/stats', methods=['GET'])
 @jwt_required()
 def get_dashboard_stats():
     """Get comprehensive dashboard statistics for the user"""
     try:
-        user_id = get_jwt_identity()
-        user = User.query.get(user_id)
+        current_user_id = get_jwt_identity()
+        if not current_user_id:
+            return jsonify({'error': 'User not authenticated'}), 401
+        
+        user = User.query.get(current_user_id)
         
         if not user:
             return jsonify({'error': 'User not found'}), 404
@@ -35,12 +52,12 @@ def get_dashboard_stats():
         }
         
         # Leave balances
-        balances = LeaveBalance.get_user_all_balances(user_id, current_year)
+        balances = LeaveBalance.get_user_all_balances(current_user_id, current_year)
         if not balances:
             # Initialize balances if they don't exist
             user.init_leave_balances()
             db.session.commit()
-            balances = LeaveBalance.get_user_all_balances(user_id, current_year)
+            balances = LeaveBalance.get_user_all_balances(current_user_id, current_year)
         
         stats['leave_balances'] = [balance.to_dict() for balance in balances]
         
@@ -58,7 +75,7 @@ def get_dashboard_stats():
         # User's applications this year
         user_applications = LeaveApplication.query.filter(
             and_(
-                LeaveApplication.applicant_id == user_id,
+                LeaveApplication.applicant_id == current_user_id,
                 extract('year', LeaveApplication.start_date) == current_year
             )
         ).all()
@@ -74,7 +91,7 @@ def get_dashboard_stats():
         # Current leave status
         current_leave = LeaveApplication.query.filter(
             and_(
-                LeaveApplication.applicant_id == user_id,
+                LeaveApplication.applicant_id == current_user_id,
                 LeaveApplication.status == 'approved',
                 LeaveApplication.start_date <= today,
                 LeaveApplication.end_date >= today
@@ -94,7 +111,7 @@ def get_dashboard_stats():
         # Upcoming approved leaves
         upcoming_leaves = LeaveApplication.query.filter(
             and_(
-                LeaveApplication.applicant_id == user_id,
+                LeaveApplication.applicant_id == current_user_id,
                 LeaveApplication.status == 'approved',
                 LeaveApplication.start_date > today
             )
@@ -114,7 +131,7 @@ def get_dashboard_stats():
             stats['next_leave_countdown'] = None
         
         # Notifications
-        unread_notifications = Notification.get_unread_count(user_id)
+        unread_notifications = Notification.get_unread_count(current_user_id)
         stats['unread_notifications'] = unread_notifications
         
         # Role-specific stats

@@ -1,5 +1,13 @@
 import api from './authService';
 
+const API_ENDPOINTS = {
+  LEAVE_TYPES: '/api/leave/types',           // Changed from /api/leaves/types
+  LEAVE_BALANCES: '/api/leave_balances',     // Changed from /api/leaves/balances  
+  LEAVE_HISTORY: '/api/leave/history',       // Changed from /api/leaves/history
+  LEAVE_PENDING: '/api/leave/pending',       // Changed from /api/leaves/pending
+  APPLY_LEAVE: '/api/leave/apply',           // Changed from /api/leaves/apply
+};
+
 export const leaveService = {
   async getLeaveTypes() {
     try {

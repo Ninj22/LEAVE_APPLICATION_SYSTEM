@@ -61,6 +61,26 @@ def get_leave_types():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@leave_bp.route('/history', methods=['GET'])
+@jwt_required()
+def get_leave_history():
+    """Get user's leave history"""
+    try:
+        current_user_id = get_jwt_identity()
+        year = request.args.get('year', type=int)
+        
+        query = LeaveApplication.query.filter_by(user_id=current_user_id)
+        if year:
+            query = query.filter(db.extract('year', LeaveApplication.start_date) == year)
+            
+        applications = query.order_by(LeaveApplication.created_at.desc()).all()
+        
+        return jsonify({
+            'applications': [app.to_dict() for app in applications]
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
 @leave_bp.route('/balances', methods=['GET'])
 @jwt_required()
 def get_leave_balances():
@@ -101,6 +121,26 @@ def get_leave_balance_by_type(leave_type_id):
         
         return jsonify({'balance': balance.to_dict()}), 200
         
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@leave_bp.route('/pending', methods=['GET'])
+@jwt_required()
+def get_pending_applications():
+    """Get pending leave applications for approval"""
+    try:
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        
+        # Only HOD and Principal Secretary can see pending applications
+        if current_user.role not in ['hod', 'principal_secretary']:
+            return jsonify({'error': 'Insufficient permissions'}), 403
+            
+        applications = LeaveApplication.query.filter_by(status='pending').all()
+        
+        return jsonify({
+            'applications': [app.to_dict() for app in applications]
+        }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
