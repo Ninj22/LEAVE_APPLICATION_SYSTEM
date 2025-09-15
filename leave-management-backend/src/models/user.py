@@ -6,7 +6,6 @@ from src.extensions import db
 
 class User(db.Model):
        __tablename__ = 'users'
-       __table_args__ = {'extend_existing': True}
 
        id = db.Column(db.Integer, primary_key=True)
        employee_number = db.Column(db.String(6), unique=True, nullable=False)
@@ -22,32 +21,23 @@ class User(db.Model):
        updated_at = db.Column(db.DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc))
        is_active = db.Column(db.Boolean, default=False)
        email_verification_token = db.Column(db.String(100), nullable=True)
-
-       #Department relationship
        department_id = db.Column(db.Integer, db.ForeignKey('departments.id'), nullable=True)
-       department_id = db.Column(
-        db.Integer,
-        db.ForeignKey('departments.id', use_alter=True, name="fk_users_departments"),
-        nullable=True
-    )
 
-       department = db.relationship("Department", back_populates="users")
+       # Department relationship
+       # Relationships with explicit foreign_keys
+       department = db.relationship('Department', foreign_keys='User.department_id', backref='employees')
+       
+       # For department head relationship (if user is head of a department)
+       headed_department = db.relationship('Department', foreign_keys='Department.head_id', back_populates='head')
 
-       # Relationships
-       department = db.relationship('Department', foreign_keys=[department_id], back_populates='members')
-       leave_applications = db.relationship('LeaveApplication', foreign_keys='LeaveApplication.applicant_id', back_populates='applicant')
-       leave_balances = db.relationship('LeaveBalance', back_populates='user')
-       notifications = db.relationship('Notification', back_populates='user')
-       approved_applications = db.relationship('LeaveApplication', foreign_keys='LeaveApplication.approved_by')
-
-       login_sessions = db.relationship('LoginSession', back_populates='user', lazy=True)
-    #    leave_balances = db.relationship('LeaveBalance', back_populates='user', lazy=True)
-       password_reset_tokens = db.relationship('PasswordResetToken', back_populates='user', lazy=True)
-    #    notifications = db.relationship('Notification', back_populates='user', lazy=True)
-    #    leave_applications = db.relationship('LeaveRequest', foreign_keys='LeaveRequest.employee_id', back_populates='employee', lazy=True)
-       duties_assigned = db.relationship('LeaveRequest', foreign_keys='LeaveRequest.person_handling_duties_id', back_populates='duty_handler', lazy=True)
-       leaves_approved = db.relationship('LeaveRequest', foreign_keys='LeaveRequest.approved_by', lazy=True)
-
+       leave_applications = db.relationship('LeaveApplication', foreign_keys='LeaveApplication.user_id',back_populates='user')
+       
+       leave_balances = db.relationship('LeaveBalance',foreign_keys='LeaveBalance.user_id', back_populates='user')
+       
+       login_sessions = db.relationship('LoginSession',foreign_keys='LoginSession.user_id',back_populates='user')
+       
+       password_reset_tokens = db.relationship('PasswordResetToken',foreign_keys='PasswordResetToken.user_id',back_populates='user')
+       
        def set_password(self, password):
            """Hash and set password"""
            self.password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')

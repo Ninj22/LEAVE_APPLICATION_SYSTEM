@@ -15,8 +15,21 @@ class LeaveType(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     # Relationships
-    applications = db.relationship('LeaveApplication', back_populates='leave_type')
-    balances = db.relationship('LeaveBalance', back_populates='leave_type')
+    applications = db.relationship('LeaveApplication',foreign_keys='LeaveApplication.leave_type_id',back_populates='leave_type')
+    
+    balances = db.relationship('LeaveBalance',foreign_keys='LeaveBalance.leave_type_id',back_populates='leave_type')
+    
+    def to_dict(self):
+        """Convert leave type to dictionary"""
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'max_days': self.max_days,
+            'exclude_weekends': self.exclude_weekends,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
     
     @classmethod
     def seed_leave_types(cls):
@@ -43,18 +56,6 @@ class LeaveType(db.Model):
         except Exception as e:
             db.session.rollback()
             print(f"Error seeding leave types: {e}")
-
-    def to_dict(self):
-        """Convert leave type to dictionary"""
-        return {
-            'id': self.id,
-            'name': self.name,
-            'description': self.description,
-            'max_days': self.max_days,
-            'exclude_weekends': self.exclude_weekends,
-            'is_active': self.is_active,
-            'created_at': self.created_at.isoformat() if self.created_at else None
-        }
     
     @classmethod
     def get_active_types(cls):

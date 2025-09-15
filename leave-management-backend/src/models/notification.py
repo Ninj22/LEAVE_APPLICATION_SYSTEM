@@ -9,16 +9,15 @@ class Notification(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     title = db.Column(db.String(200), nullable=False)
     message = db.Column(db.Text, nullable=False)
-    notification_type = db.Column(db.String(50), nullable=False)  # 'leave_application', 'leave_approval', 'leave_rejection', 'system'
+    notification_type = db.Column(db.String(50), nullable=False)
     is_read = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.now(timezone.utc))
     
-    # Optional reference to related objects
     leave_application_id = db.Column(db.Integer, db.ForeignKey('leave_applications.id'), nullable=True)
     
-    # Relationships
-    user = db.relationship('User', back_populates='notifications')
-    leave_application = db.relationship('LeaveApplication', backref='notifications')
+    # Relationships - NO back_populates to avoid circular issues
+    user = db.relationship('User', foreign_keys=[user_id])
+    leave_application = db.relationship('LeaveApplication', foreign_keys=[leave_application_id])
 
     def to_dict(self):
         """Convert notification to dictionary"""
@@ -44,7 +43,7 @@ class Notification(db.Model):
         notification = cls(
             user_id=user_id,
             title="New Leave Application",
-            message=f"New leave application from {leave_application.applicant.full_name} for {leave_application.leave_type.name}",
+            message=f"New leave application from {leave_application.user.full_name} for {leave_application.leave_type.name}",  # FIXED: use .user not .applicant
             notification_type="leave_application",
             leave_application_id=leave_application.id
         )

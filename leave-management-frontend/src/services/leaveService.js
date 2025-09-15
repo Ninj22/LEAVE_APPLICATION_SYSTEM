@@ -11,7 +11,7 @@ const API_ENDPOINTS = {
 export const leaveService = {
   async getLeaveTypes() {
     try {
-      const response = await api.get('/api/leaves/types');
+      const response = await api.get(API_ENDPOINTS.LEAVE_TYPES);
       return response.data;
     } catch (error) {
       throw new Error(error.response?.data?.error || 'Failed to get leave types');
